@@ -1,12 +1,24 @@
 import React, { useState } from 'react';
-import { ArrowUpRight, ArrowDownRight, RefreshCw, Search, Filter, Calendar } from 'lucide-react';
+import {
+  ArrowUpRight,
+  ArrowDownRight,
+  RefreshCw,
+  Search,
+  Filter,
+  Calendar,
+  ArrowRightLeft,
+} from 'lucide-react';
 
 interface Transaction {
   id: string;
   item_id: string;
-  type: 'IN' | 'OUT' | 'ADJUSTMENT';
+  type: 'IN' | 'OUT' | 'ADJUSTMENT' | 'TRANSFER';
   quantity: number;
   notes?: string;
+  movement_reason?: string | null;
+  from_box_id?: string | null;
+  to_box_id?: string | null;
+  related_item_id?: string | null;
   created_at: string;
   inventory_items?: {
     name: string | null;
@@ -20,17 +32,22 @@ interface TransactionHistoryProps {
 
 export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transactions }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [typeFilter, setTypeFilter] = useState<'ALL' | 'IN' | 'OUT'>('ALL');
+  const [typeFilter, setTypeFilter] = useState<
+    'ALL' | 'IN' | 'OUT' | 'ADJUSTMENT' | 'TRANSFER'
+  >('ALL');
 
-  // Filtered transactions
   const filteredTransactions = transactions.filter((tx) => {
     const itemName = (tx.inventory_items?.name || '').toLowerCase();
     const itemSku = (tx.inventory_items?.sku || '').toLowerCase();
+    const notes = (tx.notes || '').toLowerCase();
+    const reason = (tx.movement_reason || '').toLowerCase();
     const search = searchTerm.toLowerCase();
 
     const matchesSearch =
       itemName.includes(search) ||
-      itemSku.includes(search);
+      itemSku.includes(search) ||
+      notes.includes(search) ||
+      reason.includes(search);
 
     const matchesType =
       typeFilter === 'ALL' ||
@@ -39,22 +56,66 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
     return matchesSearch && matchesType;
   });
 
+  const getTxVisual = (tx: Transaction) => {
+    if (tx.type === 'IN') {
+      return {
+        label: 'Stock In',
+        icon: <ArrowUpRight size={18} />,
+        background: 'var(--success-glow)',
+        color: 'var(--success)',
+        borderColor: 'hsla(142, 72%, 50%, 0.3)',
+        qtyPrefix: '+',
+      };
+    }
+
+    if (tx.type === 'OUT') {
+      return {
+        label: 'Stock Out',
+        icon: <ArrowDownRight size={18} />,
+        background: 'var(--danger-glow)',
+        color: 'var(--danger)',
+        borderColor: 'hsla(350, 80%, 55%, 0.3)',
+        qtyPrefix: '-',
+      };
+    }
+
+    if (tx.type === 'TRANSFER') {
+      return {
+        label: 'Stock Transfer',
+        icon: <ArrowRightLeft size={18} />,
+        background: 'var(--primary-glow)',
+        color: 'var(--primary)',
+        borderColor: 'hsla(262, 83%, 62%, 0.3)',
+        qtyPrefix: '',
+      };
+    }
+
+    return {
+      label: 'Adjustment',
+      icon: <RefreshCw size={16} />,
+      background: 'var(--primary-glow)',
+      color: 'var(--primary)',
+      borderColor: 'hsla(262, 83%, 62%, 0.3)',
+      qtyPrefix: '',
+    };
+  };
+
   return (
     <div style={styles.container} className="animate-slide-up">
-      {/* Header */}
       <div>
         <h1 style={styles.title}>Activity Log</h1>
-        <p style={{ color: 'var(--text-secondary)' }}>Audit history of all inventory intake and outflow operations.</p>
+        <p style={{ color: 'var(--text-secondary)' }}>
+          Audit history of stock in, stock out, adjustments, and stock transfers.
+        </p>
       </div>
 
-      {/* Filters Panel */}
       <div style={styles.filterPanel} className="glass-panel">
         <div style={styles.searchContainer}>
           <Search size={18} style={styles.searchIcon} />
           <input
             type="text"
             className="form-control"
-            placeholder="Search by product name or SKU..."
+            placeholder="Search by product name, SKU, note, or reason..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             style={{ paddingLeft: '44px' }}
@@ -71,30 +132,34 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
               style={{ padding: '10px 14px' }}
             >
               <option value="ALL">All Movements</option>
-              <option value="IN">Stock Additions (IN)</option>
-              <option value="OUT">Stock Drawdowns (OUT)</option>
+              <option value="IN">Stock Additions</option>
+              <option value="OUT">Stock Outflow</option>
+              <option value="TRANSFER">Stock Transfer</option>
+              <option value="ADJUSTMENT">Adjustments</option>
             </select>
           </div>
         </div>
       </div>
 
-      {/* Log list */}
       <div className="glass-panel" style={styles.listWrapper}>
         {filteredTransactions.length === 0 ? (
           <div style={styles.emptyState}>
             <Filter size={36} style={{ color: 'var(--text-muted)', marginBottom: '12px' }} />
-            <p style={{ color: 'var(--text-secondary)' }}>No transactions matched your query.</p>
+            <p style={{ color: 'var(--text-secondary)' }}>
+              No transactions matched your query.
+            </p>
           </div>
         ) : (
           <div style={styles.timeline}>
             {filteredTransactions.map((tx) => {
-              const isAdd = tx.type === 'IN';
-              const isRemove = tx.type === 'OUT';
+              const visual = getTxVisual(tx);
+
               const formattedDate = new Date(tx.created_at).toLocaleDateString([], {
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric',
               });
+
               const formattedTime = new Date(tx.created_at).toLocaleTimeString([], {
                 hour: '2-digit',
                 minute: '2-digit',
@@ -102,27 +167,37 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
 
               return (
                 <div key={tx.id} style={styles.timelineItem}>
-                  {/* Timeline Badge Icon */}
-                  <div style={{
-                    ...styles.iconWrapper,
-                    backgroundColor: isAdd ? 'var(--success-glow)' : isRemove ? 'var(--danger-glow)' : 'var(--primary-glow)',
-                    color: isAdd ? 'var(--success)' : isRemove ? 'var(--danger)' : 'var(--primary)',
-                    borderColor: isAdd ? 'hsla(142, 72%, 50%, 0.3)' : isRemove ? 'hsla(350, 80%, 55%, 0.3)' : 'hsla(262, 83%, 62%, 0.3)',
-                  }}>
-                    {isAdd ? <ArrowUpRight size={18} /> : isRemove ? <ArrowDownRight size={18} /> : <RefreshCw size={16} />}
+                  <div
+                    style={{
+                      ...styles.iconWrapper,
+                      backgroundColor: visual.background,
+                      color: visual.color,
+                      borderColor: visual.borderColor,
+                    }}
+                  >
+                    {visual.icon}
                   </div>
 
-                  {/* Log Details */}
                   <div style={styles.detailsContainer}>
                     <div style={styles.detailsHeader}>
                       <div>
+                        <div style={styles.typeLabel}>{visual.label}</div>
+
                         <h4 style={styles.itemName}>
-                          {tx.inventory_items?.name || <span style={{ color: 'var(--text-muted)' }}>Deleted Product</span>}
+                          {tx.inventory_items?.name || (
+                            <span style={{ color: 'var(--text-muted)' }}>
+                              Deleted Product
+                            </span>
+                          )}
                         </h4>
+
                         {tx.inventory_items?.sku && (
-                          <span style={styles.skuLabel}>SKU: {tx.inventory_items.sku}</span>
+                          <span style={styles.skuLabel}>
+                            SKU: {tx.inventory_items.sku}
+                          </span>
                         )}
                       </div>
+
                       <div style={styles.dateContainer}>
                         <Calendar size={14} style={{ color: 'var(--text-muted)' }} />
                         <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
@@ -133,17 +208,40 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
 
                     <div style={styles.detailsBody}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Quantity change:</span>
-                        <strong style={{
-                          fontSize: '1rem',
-                          color: isAdd ? 'var(--success)' : isRemove ? 'var(--danger)' : 'var(--primary)'
-                        }}>
-                          {isAdd ? '+' : ''}{tx.quantity}
+                        <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                          {tx.type === 'TRANSFER' ? 'Quantity transferred:' : 'Quantity change:'}
+                        </span>
+
+                        <strong
+                          style={{
+                            fontSize: '1rem',
+                            color: visual.color,
+                          }}
+                        >
+                          {visual.qtyPrefix}
+                          {tx.quantity}
                         </strong>
                       </div>
+
                       {tx.notes && (
                         <p style={styles.notesText}>
-                          <strong>Notes: </strong>{tx.notes}
+                          <strong>Details: </strong>
+                          {tx.notes}
+                        </p>
+                      )}
+
+                      {tx.movement_reason && (
+                        <p style={styles.reasonText}>
+                          <strong>Reason: </strong>
+                          {tx.movement_reason}
+                        </p>
+                      )}
+
+                      {tx.type === 'TRANSFER' && tx.related_item_id && (
+                        <p style={styles.metaText}>
+                          {tx.related_item_id === tx.item_id
+                            ? 'Full item transfer'
+                            : 'Partial transfer created a new item entry in the destination box'}
                         </p>
                       )}
                     </div>
@@ -252,21 +350,24 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '12px',
     flexWrap: 'wrap',
   },
+  typeLabel: {
+    fontSize: '0.72rem',
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+    marginBottom: '4px',
+    fontWeight: 700,
+  },
   itemName: {
     fontSize: '1.05rem',
     fontWeight: 600,
     color: 'var(--text-primary)',
   },
   skuLabel: {
-    fontFamily: 'monospace',
-    fontSize: '0.75rem',
+    fontSize: '0.76rem',
     color: 'var(--text-muted)',
-    background: 'var(--bg-card)',
-    padding: '2px 6px',
-    borderRadius: '4px',
-    border: '1px solid var(--border-color)',
-    display: 'inline-block',
     marginTop: '4px',
+    display: 'inline-block',
   },
   dateContainer: {
     display: 'flex',
@@ -276,13 +377,24 @@ const styles: Record<string, React.CSSProperties> = {
   detailsBody: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '6px',
-    borderTop: '1px solid var(--border-color)',
-    paddingTop: '10px',
+    gap: '8px',
   },
   notesText: {
     fontSize: '0.85rem',
     color: 'var(--text-secondary)',
-    lineHeight: '1.4',
+    lineHeight: 1.45,
+  },
+  reasonText: {
+    fontSize: '0.85rem',
+    color: 'var(--text-secondary)',
+    lineHeight: 1.45,
+    padding: '8px 10px',
+    background: 'var(--bg-card)',
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--border-color)',
+  },
+  metaText: {
+    fontSize: '0.76rem',
+    color: 'var(--text-muted)',
   },
 };

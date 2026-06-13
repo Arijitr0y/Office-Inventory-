@@ -17,9 +17,11 @@ import {
   MapPin,
   Minus,
   RefreshCw,
-  Printer
+  //Printer,
+  AlertTriangle
 } from 'lucide-react';
-import { NamingModal } from './RoomBoxModals';
+import { NamingModal, MoveItemModal, MoveBoxModal } from './RoomBoxModals';
+import type { UserSettings } from './UserSettings';
 
 interface Room {
   id: string;
@@ -33,6 +35,7 @@ interface Box {
   name: string;
   created_at: string;
   updated_at: string;
+  archived?: boolean;
 }
 
 interface InventoryItem {
@@ -57,6 +60,8 @@ interface DashboardProps {
   onRefresh: () => void;
   onEditItem: (item: InventoryItem) => void;
   onAddItemInBox: (boxId: string) => void;
+  onOpenSettings: () => void;
+  settings: UserSettings;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -67,6 +72,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onRefresh,
   onEditItem,
   onAddItemInBox,
+  onOpenSettings,
+  settings,
 }) => {
   const [selectedRoomId, setSelectedRoomId] = useState<string>('');
   const [activeBoxId, setActiveBoxId] = useState<string | null>(null);
@@ -89,14 +96,30 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [movingBox, setMovingBox] = useState<Box | null>(null);
   const [moveTargetBoxId, setMoveTargetBoxId] = useState('');
   const [moveTargetRoomId, setMoveTargetRoomId] = useState('');
+  const [transferQuantity, setTransferQuantity] = useState(1);
+  const [transferReason, setTransferReason] = useState('');
   const [moving, setMoving] = useState(false);
 
   // Set default selected room if not set
   React.useEffect(() => {
-    if (rooms.length > 0 && !selectedRoomId) {
-      setSelectedRoomId(rooms[0].id);
+    if (rooms.length === 0) {
+      if (selectedRoomId) setSelectedRoomId('');
+      return;
     }
-  }, [rooms, selectedRoomId]);
+
+    const selectedRoomStillExists = rooms.some((room) => room.id === selectedRoomId);
+    const defaultRoomStillExists = settings.defaultRoomId
+      ? rooms.some((room) => room.id === settings.defaultRoomId)
+      : false;
+
+    if (!selectedRoomId || !selectedRoomStillExists) {
+      setSelectedRoomId(
+        defaultRoomStillExists && settings.defaultRoomId
+          ? settings.defaultRoomId
+          : rooms[0].id
+      );
+    }
+  }, [rooms, selectedRoomId, settings.defaultRoomId]);
 
   const activeRoom = rooms.find(r => r.id === selectedRoomId);
   const activeRoomName = activeRoom ? activeRoom.name : 'Storage Room';
@@ -114,6 +137,36 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const activeBox = boxes.find(b => b.id === activeBoxId);
   const itemsInActiveBox = items.filter(item => item.box_id === activeBoxId);
+
+  const shouldShowStockWarning = (item: InventoryItem) => {
+    const isOut = item.quantity === 0;
+    const isLow = item.quantity > 0 && item.quantity <= item.min_stock_level;
+
+    return (
+      (isOut && settings.outOfStockWarningEnabled) ||
+      (isLow && settings.lowStockWarningEnabled)
+    );
+  };
+
+  const getStockBadge = (item: InventoryItem) => {
+    if (item.quantity === 0 && settings.outOfStockWarningEnabled) {
+      return { label: 'Out', className: 'badge-danger' };
+    }
+
+    if (
+      item.quantity > 0 &&
+      item.quantity <= item.min_stock_level &&
+      settings.lowStockWarningEnabled
+    ) {
+      return { label: 'Low', className: 'badge-warning' };
+    }
+
+    return { label: 'Healthy', className: 'badge-success' };
+  };
+
+  const homeWarningItems = settings.showLowStockOnHome
+    ? items.filter(shouldShowStockWarning).slice(0, 5)
+    : [];
 
   // Room DB Operations
   const handleSaveRoom = async (name: string) => {
@@ -137,23 +190,45 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const handleDeleteRoom = async () => {
     if (!selectedRoomId) return;
-    const confirmDelete = window.confirm(`Are you sure you want to delete the room "${activeRoomName}"? All boxes and items inside it will be permanently deleted.`);
+
+    const boxesInsideRoom = boxes.filter((box) => box.room_id === selectedRoomId);
+    const boxIdsInsideRoom = boxesInsideRoom.map((box) => box.id);
+    const itemCountInsideRoom = items.filter(
+      (item) => item.box_id && boxIdsInsideRoom.includes(item.box_id)
+    ).length;
+
+    if (settings.blockDeleteRoomWithItems && itemCountInsideRoom > 0) {
+      alert(
+        `Room delete blocked. "${activeRoomName}" contains ${itemCountInsideRoom} inventory item(s). Move or delete those items first, or turn off this setting.`
+      );
+      return;
+    }
+
+    const confirmMessage =
+      itemCountInsideRoom > 0
+        ? `Are you sure you want to delete the room "${activeRoomName}"? It contains ${itemCountInsideRoom} item(s). All boxes and items inside it will be permanently deleted.`
+        : `Are you sure you want to delete the room "${activeRoomName}"? Empty boxes inside it will also be deleted.`;
+
+    const confirmDelete = window.confirm(confirmMessage);
     if (!confirmDelete) return;
 
     try {
       const { error } = await supabase
         .from('rooms')
         .delete()
-        .eq('id', selectedRoomId);
+        .eq('id', selectedRoomId)
+        .eq('user_id', userId);
+
       if (error) throw error;
 
-      // Select another room or reset
-      const remainingRooms = rooms.filter(r => r.id !== selectedRoomId);
+      const remainingRooms = rooms.filter((r) => r.id !== selectedRoomId);
+
       if (remainingRooms.length > 0) {
         setSelectedRoomId(remainingRooms[0].id);
       } else {
         setSelectedRoomId('');
       }
+
       onRefresh();
     } catch (err: any) {
       alert(err.message || 'Error deleting room');
@@ -179,19 +254,61 @@ export const Dashboard: React.FC<DashboardProps> = ({
   };
 
   const handleDeleteBox = async (boxId: string) => {
-    const box = boxes.find(b => b.id === boxId);
-    const confirmDelete = window.confirm(`Are you sure you want to delete the box "${box?.name || 'Box'}"? All items stored inside it will be permanently deleted.`);
+    const box = boxes.find((b) => b.id === boxId);
+    const boxItems = items.filter((item) => item.box_id === boxId);
+
+    if (settings.archiveEmptyBoxes && boxItems.length === 0) {
+      const confirmArchive = window.confirm(
+        `Archive the empty box "${box?.name || 'Box'}" instead of deleting it?`
+      );
+
+      if (!confirmArchive) return;
+
+      try {
+        const { error } = await supabase
+          .from('boxes')
+          .update({ archived: true })
+          .eq('id', boxId)
+          .eq('user_id', userId);
+
+        if (error) throw error;
+
+        if (activeBoxId === boxId) {
+          setActiveBoxId(null);
+        }
+
+        onRefresh();
+      } catch (err: any) {
+        alert(
+          err.message ||
+          'Error archiving box. Make sure you added the archived column in Supabase.'
+        );
+      }
+
+      return;
+    }
+
+    const confirmMessage =
+      boxItems.length > 0
+        ? `Are you sure you want to delete the box "${box?.name || 'Box'}"? ${boxItems.length} item(s) inside it will be permanently deleted.`
+        : `Are you sure you want to permanently delete the empty box "${box?.name || 'Box'}"?`;
+
+    const confirmDelete = window.confirm(confirmMessage);
     if (!confirmDelete) return;
 
     try {
       const { error } = await supabase
         .from('boxes')
         .delete()
-        .eq('id', boxId);
+        .eq('id', boxId)
+        .eq('user_id', userId);
+
       if (error) throw error;
+
       if (activeBoxId === boxId) {
         setActiveBoxId(null);
       }
+
       onRefresh();
     } catch (err: any) {
       alert(err.message || 'Error deleting box');
@@ -253,53 +370,53 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const openMoveItem = (item: InventoryItem) => {
     setMovingItem(item);
-    setMoveTargetBoxId(item.box_id || '');
+    setMoveTargetBoxId('');
+    setTransferQuantity(item.quantity || 1);
+    setTransferReason('');
   };
 
   const closeMoveItem = () => {
     setMovingItem(null);
     setMoveTargetBoxId('');
+    setTransferQuantity(1);
+    setTransferReason('');
   };
 
   const handleMoveItem = async () => {
     if (!movingItem || !moveTargetBoxId) return;
 
     if (moveTargetBoxId === movingItem.box_id) {
-      closeMoveItem();
+      alert('Please select a different destination box.');
+      return;
+    }
+    const qtyToMove = Math.floor(Number(transferQuantity));
+
+    if (!qtyToMove || qtyToMove <= 0) {
+      alert('Transfer quantity must be greater than 0.');
       return;
     }
 
-    const fromBoxId = movingItem.box_id || null;
-    const toBox = boxes.find((box) => box.id === moveTargetBoxId);
-    const fromBox = boxes.find((box) => box.id === fromBoxId);
+    if (qtyToMove > movingItem.quantity) {
+      alert('Transfer quantity cannot be more than available stock.');
+      return;
+    }
 
     setMoving(true);
 
     try {
-      const { error: updateError } = await supabase
-        .from('inventory_items')
-        .update({ box_id: moveTargetBoxId })
-        .eq('id', movingItem.id)
-        .eq('user_id', userId);
+      const { error } = await supabase.rpc('transfer_inventory_item', {
+        p_item_id: movingItem.id,
+        p_to_box_id: moveTargetBoxId,
+        p_quantity: qtyToMove,
+        p_reason: transferReason.trim() || null,
+      });
 
-      if (updateError) throw updateError;
-
-      const { error: movementError } = await supabase
-        .from('item_movements')
-        .insert({
-          user_id: userId,
-          item_id: movingItem.id,
-          from_box_id: fromBoxId,
-          to_box_id: moveTargetBoxId,
-          notes: `Moved item "${movingItem.name}" from "${fromBox?.name || 'Unassigned'}" to "${toBox?.name || 'Unknown'}"`,
-        });
-
-      if (movementError) console.error('Item movement log error:', movementError);
+      if (error) throw error;
 
       closeMoveItem();
       onRefresh();
     } catch (err: any) {
-      alert(err.message || 'Error moving item');
+      alert(err.message || 'Error transferring stock');
     } finally {
       setMoving(false);
     }
@@ -307,7 +424,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const openMoveBox = (box: Box) => {
     setMovingBox(box);
-    setMoveTargetRoomId(box.room_id);
+    setMoveTargetRoomId('');
   };
 
   const closeMoveBox = () => {
@@ -319,7 +436,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
     if (!movingBox || !moveTargetRoomId) return;
 
     if (moveTargetRoomId === movingBox.room_id) {
-      closeMoveBox();
+      alert('Please select a different destination room.');
       return;
     }
 
@@ -348,7 +465,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
           notes: `Moved box "${movingBox.name}" from "${fromRoom?.name || 'Unknown'}" to "${toRoom?.name || 'Unknown'}"`,
         });
 
-      if (movementError) console.error('Box movement log error:', movementError);
+      if (movementError) {
+        console.error('Box movement log error:', movementError);
+      }
 
       setSelectedRoomId(moveTargetRoomId);
       closeMoveBox();
@@ -359,10 +478,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
       setMoving(false);
     }
   };
-
-  const handlePrint = () => {
-    window.print();
-  };
+  // const handlePrint = () => {
+  //   window.print();
+  // };
 
   // Naming helper toggles
   const openAddRoom = () => {
@@ -481,8 +599,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           ) : (
             <div style={styles.itemGrid}>
               {itemsInActiveBox.map((item) => {
-                const isLow = item.quantity <= item.min_stock_level && item.quantity > 0;
-                const isOut = item.quantity === 0;
+                const stockBadge = getStockBadge(item);
 
                 return (
                   <div key={item.id} style={styles.itemCard} className="glass-panel">
@@ -497,8 +614,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
                           </span>
                         </div>
                       </div>
-                      <span className={`badge ${isOut ? 'badge-danger' : isLow ? 'badge-warning' : 'badge-success'}`}>
-                        {isOut ? 'Out' : isLow ? 'Low' : 'Healthy'}
+                      <span className={`badge ${stockBadge.className}`}>
+                        {stockBadge.label}
                       </span>
                     </div>
 
@@ -533,7 +650,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                           className="btn-icon"
                           style={{ width: '32px', height: '32px' }}
                           onClick={() => openMoveItem(item)}
-                          title="Move Item to Another Box"
+                          title="Transfer / Split Stock"
                         >
                           <ArrowRight size={12} />
                         </button>
@@ -592,6 +709,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
 
         {/* naming modal handles box naming adjustments */}
+        {/* naming modal handles box naming adjustments */}
         <NamingModal
           isOpen={namingModalOpen}
           onClose={() => setNamingModalOpen(false)}
@@ -599,6 +717,36 @@ export const Dashboard: React.FC<DashboardProps> = ({
           title="Rename Box"
           placeholder="e.g. Electrical Components"
           initialValue={editingInitialValue}
+        />
+
+        {/* move item modal */}
+        <MoveItemModal
+          isOpen={movingItem !== null}
+          onClose={closeMoveItem}
+          onMove={handleMoveItem}
+          itemName={movingItem ? movingItem.name : ''}
+          itemQuantity={movingItem ? movingItem.quantity : 0}
+          currentBoxId={movingItem ? movingItem.box_id || null : null}
+          targetBoxId={moveTargetBoxId}
+          setTargetBoxId={setMoveTargetBoxId}
+          transferQuantity={transferQuantity}
+          setTransferQuantity={setTransferQuantity}
+          transferReason={transferReason}
+          setTransferReason={setTransferReason}
+          boxes={boxes}
+          rooms={rooms}
+        />
+
+        {/* move box modal */}
+        <MoveBoxModal
+          isOpen={movingBox !== null}
+          onClose={closeMoveBox}
+          onMove={handleMoveBox}
+          boxName={movingBox ? movingBox.name : ''}
+          currentRoomId={movingBox ? movingBox.room_id : ''}
+          targetRoomId={moveTargetRoomId}
+          setTargetRoomId={setMoveTargetRoomId}
+          rooms={rooms}
         />
       </div>
     );
@@ -611,15 +759,63 @@ export const Dashboard: React.FC<DashboardProps> = ({
       <div style={styles.mockHeader}>
         <div style={styles.mockTitleWrapper}>
           <h1 style={styles.mockTitle}>Your storage room</h1>
+          {moving && <RefreshCw size={16} className="spin" style={{ color: 'var(--primary)', marginLeft: '4px' }} />}
           <HelpCircle size={18} style={{ color: 'var(--text-muted)', cursor: 'pointer' }} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <span className="beta-tag">Beta</span>
-          <div className="profile-avatar-btn">
+          <div
+            className="profile-avatar-btn"
+            onClick={onOpenSettings}
+            title="Settings"
+            style={{ cursor: 'pointer' }}
+          >
             <User size={18} />
           </div>
         </div>
       </div>
+
+      {settings.showLowStockOnHome && homeWarningItems.length > 0 && (
+        <div style={styles.homeWarningCard} className="glass-panel">
+          <div style={styles.homeWarningHeader}>
+            <AlertTriangle size={18} />
+            <strong>{homeWarningItems.length} item(s) need attention</strong>
+          </div>
+
+          <div style={styles.homeWarningList}>
+            {homeWarningItems.map((item) => {
+              const box = boxes.find((b) => b.id === item.box_id);
+              const room = box ? rooms.find((r) => r.id === box.room_id) : null;
+              const badge = getStockBadge(item);
+
+              return (
+                <div key={item.id} style={styles.homeWarningItem}>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{item.name}</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      {box?.name || 'Unassigned box'}
+                      {room ? ` • ${room.name}` : ''}
+                    </div>
+                  </div>
+
+                  <div style={{ textAlign: 'right' }}>
+                    <span className={`badge ${badge.className}`}>{badge.label}</span>
+                    <div
+                      style={{
+                        fontSize: '0.75rem',
+                        color: 'var(--text-muted)',
+                        marginTop: '4px',
+                      }}
+                    >
+                      {item.quantity} / {item.min_stock_level}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Room Selector dropdown container */}
       <div className="room-selector-container">
@@ -673,7 +869,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         >
           <PlusCircle size={16} />
         </button>
-        <button
+        {/* <button
           className="btn btn-secondary btn-room-action"
           style={{ padding: '0 14px', width: 'auto', gap: '6px' }}
           onClick={handlePrint}
@@ -681,7 +877,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         >
           <Printer size={16} />
           <span>Print</span>
-        </button>
+        </button> */}
         <button className="btn btn-primary btn-add-box" onClick={openAddBox}>
           <Plus size={16} />
           <span>Add Box</span>
@@ -814,11 +1010,69 @@ export const Dashboard: React.FC<DashboardProps> = ({
         }
         initialValue={editingInitialValue}
       />
+
+      {/* move item modal */}
+      <MoveItemModal
+        isOpen={movingItem !== null}
+        onClose={closeMoveItem}
+        onMove={handleMoveItem}
+        itemName={movingItem ? movingItem.name : ''}
+        itemQuantity={movingItem ? movingItem.quantity : 0}
+        currentBoxId={movingItem ? movingItem.box_id || null : null}
+        targetBoxId={moveTargetBoxId}
+        setTargetBoxId={setMoveTargetBoxId}
+        transferQuantity={transferQuantity}
+        setTransferQuantity={setTransferQuantity}
+        transferReason={transferReason}
+        setTransferReason={setTransferReason}
+        boxes={boxes}
+        rooms={rooms}
+      />
+
+      {/* move box modal */}
+      <MoveBoxModal
+        isOpen={movingBox !== null}
+        onClose={closeMoveBox}
+        onMove={handleMoveBox}
+        boxName={movingBox ? movingBox.name : ''}
+        currentRoomId={movingBox ? movingBox.room_id : ''}
+        targetRoomId={moveTargetRoomId}
+        setTargetRoomId={setMoveTargetRoomId}
+        rooms={rooms}
+      />
     </div>
   );
 };
 
 const styles: Record<string, React.CSSProperties> = {
+
+  homeWarningCard: {
+    padding: '14px',
+    marginBottom: '16px',
+    border: '1px solid var(--warning)',
+  },
+  homeWarningHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    color: 'var(--warning)',
+    marginBottom: '10px',
+  },
+  homeWarningList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+  },
+  homeWarningItem: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '12px',
+    padding: '10px',
+    borderRadius: 'var(--radius-sm)',
+    background: 'var(--bg-input)',
+  },
+
   mockHeader: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -974,3 +1228,4 @@ const styles: Record<string, React.CSSProperties> = {
     paddingTop: '12px',
   },
 };
+

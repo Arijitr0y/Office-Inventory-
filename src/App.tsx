@@ -5,6 +5,16 @@ import { Dashboard } from './components/Dashboard';
 import { InventoryList } from './components/InventoryList';
 import { InventoryModal } from './components/InventoryModal';
 import { TransactionHistory } from './components/TransactionHistory';
+import { CategoryManager } from './components/CategoryManager';
+import type { Category } from './components/CategoryManager';
+
+import { SettingsControls } from './components/SettingsControls';
+import {
+  DEFAULT_USER_SETTINGS,
+  mergeSettings,
+} from './components/UserSettings';
+import type { UserSettings } from './components/UserSettings';
+
 import {
   LayoutDashboard,
   History,
@@ -33,6 +43,7 @@ interface Box {
   name: string;
   created_at: string;
   updated_at: string;
+  archived?: boolean;
 }
 
 interface InventoryItem {
@@ -52,9 +63,13 @@ interface InventoryItem {
 interface Transaction {
   id: string;
   item_id: string;
-  type: 'IN' | 'OUT' | 'ADJUSTMENT';
+  type: 'IN' | 'OUT' | 'ADJUSTMENT' | 'TRANSFER';
   quantity: number;
   notes?: string;
+  movement_reason?: string | null;
+  from_box_id?: string | null;
+  to_box_id?: string | null;
+  related_item_id?: string | null;
   created_at: string;
   inventory_items?: { name: string; sku: string };
 }
@@ -68,6 +83,9 @@ export const App: React.FC = () => {
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [userSettings, setUserSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS);
+  const [settingsSaving, setSettingsSaving] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
@@ -121,7 +139,7 @@ export const App: React.FC = () => {
         .select('*')
         .order('created_at', { ascending: true });
       if (boxesError) throw boxesError;
-      setBoxes(boxesData || []);
+      setBoxes(((boxesData || []) as Box[]).filter((box) => !box.archived));
 
       // Fetch inventory items
       const { data: itemsData, error: itemsError } = await supabase
@@ -135,20 +153,33 @@ export const App: React.FC = () => {
       const { data: txData, error: txError } = await supabase
         .from('stock_transactions')
         .select(`
-          id,
-          item_id,
-          type,
-          quantity,
-          notes,
-          created_at,
-          inventory_items (
-            name,
-            sku
-          )
-        `)
+    id,
+    item_id,
+    type,
+    quantity,
+    notes,
+    movement_reason,
+    from_box_id,
+    to_box_id,
+    related_item_id,
+    created_at,
+    inventory_items (
+      name,
+      sku
+    )
+  `)
         .order('created_at', { ascending: false });
       if (txError) throw txError;
       setTransactions((txData as any) || []);
+
+      // Fetch categories
+      const { data: catsData, error: catsError } = await supabase
+        .from('categories')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .order('sort_order', { ascending: true });
+      if (catsError) throw catsError;
+      setCategories(catsData || []);
     } catch (err: any) {
       console.error('Error fetching inventory storage data:', err.message);
     } finally {
@@ -156,9 +187,77 @@ export const App: React.FC = () => {
     }
   };
 
+
+  const fetchUserSettings = async () => {
+    if (!session?.user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('user_settings')
+        .select('settings')
+        .eq('user_id', session.user.id)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (data?.settings) {
+        setUserSettings(mergeSettings(data.settings));
+        return;
+      }
+
+      const defaultSettings = DEFAULT_USER_SETTINGS;
+
+      setUserSettings(defaultSettings);
+
+      const { error: insertError } = await supabase
+        .from('user_settings')
+        .insert({
+          user_id: session.user.id,
+          settings: defaultSettings,
+        });
+
+      if (insertError) {
+        console.warn('Could not create default user settings:', insertError.message);
+      }
+    } catch (err: any) {
+      console.error('Error fetching user settings:', err.message);
+    }
+  };
+
+  const saveUserSettings = async (nextSettings: UserSettings) => {
+    if (!session?.user) return;
+
+    const previousSettings = userSettings;
+
+    setUserSettings(nextSettings);
+    setSettingsSaving(true);
+
+    try {
+      const { error } = await supabase
+        .from('user_settings')
+        .upsert(
+          {
+            user_id: session.user.id,
+            settings: nextSettings,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id' }
+        );
+
+      if (error) throw error;
+    } catch (err: any) {
+      setUserSettings(previousSettings);
+      alert(err.message || 'Error saving settings.');
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+
   useEffect(() => {
     if (session?.user) {
       fetchData();
+      fetchUserSettings();
     }
   }, [session]);
 
@@ -190,6 +289,8 @@ export const App: React.FC = () => {
     setBoxes([]);
     setItems([]);
     setTransactions([]);
+    setCategories([]);
+    setUserSettings(DEFAULT_USER_SETTINGS);
     setActiveTab('home');
   };
 
@@ -289,8 +390,18 @@ export const App: React.FC = () => {
             items={items}
             userId={session.user.id}
             onRefresh={fetchData}
-            onEditItem={(item) => { setEditItem(item); setTargetBoxId(item.box_id || null); setIsModalOpen(true); }}
-            onAddItemInBox={(boxId) => { setTargetBoxId(boxId); setEditItem(null); setIsModalOpen(true); }}
+            onEditItem={(item) => {
+              setEditItem(item);
+              setTargetBoxId(item.box_id || null);
+              setIsModalOpen(true);
+            }}
+            onAddItemInBox={(boxId) => {
+              setTargetBoxId(boxId);
+              setEditItem(null);
+              setIsModalOpen(true);
+            }}
+            onOpenSettings={() => setActiveTab('settings')}
+            settings={userSettings}
           />
         );
       case 'search':
@@ -305,7 +416,15 @@ export const App: React.FC = () => {
       case 'history':
         return <TransactionHistory transactions={transactions} />;
       case 'checklist':
-        const lowStockItems = items.filter(item => item.quantity <= item.min_stock_level);
+        const lowStockItems = items.filter((item) => {
+          const isOut = item.quantity === 0;
+          const isLow = item.quantity > 0 && item.quantity <= item.min_stock_level;
+
+          return (
+            (isOut && userSettings.outOfStockWarningEnabled) ||
+            (isLow && userSettings.lowStockWarningEnabled)
+          );
+        });
         return (
           <div className="animate-slide-up" style={{ width: '100%' }}>
             <h1 style={styles.tabTitle}>Restock Checklist</h1>
@@ -387,6 +506,13 @@ export const App: React.FC = () => {
             <p style={{ color: 'var(--text-secondary)', marginBottom: '24px' }}>Control your system configurations and perform export tasks.</p>
 
             <div style={styles.settingsGrid}>
+              <SettingsControls
+                settings={userSettings}
+                rooms={rooms}
+                boxes={boxes}
+                saving={settingsSaving}
+                onChange={saveUserSettings}
+              />
               {/* Account Card */}
               <div style={styles.settingsCard} className="glass-panel">
                 <h3 style={styles.settingsCardTitle}>User Account</h3>
@@ -405,9 +531,16 @@ export const App: React.FC = () => {
                 </button>
               </div>
 
+              {/* Category Management */}
+              <CategoryManager
+                userId={session.user.id}
+                categories={categories}
+                onRefresh={fetchData}
+              />
+
               {/* Data Operations */}
               <div style={styles.settingsCard} className="glass-panel">
-                <h3 style={styles.settingsCardTitle}>Backup & Exports</h3>
+                <h3 style={styles.settingsCardTitle}>Backup &amp; Exports</h3>
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '16px' }}>
                   Download a snapshot of your current catalog to back up your records.
                 </p>
@@ -512,17 +645,26 @@ export const App: React.FC = () => {
           <SettingsIcon size={20} />
           <span>Settings</span>
         </button>
+
       </nav>
 
       {/* Inventory Add/Edit Modal */}
       <InventoryModal
         isOpen={isModalOpen}
-        onClose={() => { setIsModalOpen(false); setEditItem(null); setTargetBoxId(null); }}
+        onClose={() => {
+          setIsModalOpen(false);
+          setEditItem(null);
+          setTargetBoxId(null);
+        }}
         onSave={fetchData}
         userId={session.user.id}
         editItem={editItem}
-        boxId={targetBoxId}
-        boxName={boxes.find((box) => box.id === targetBoxId)?.name || null}
+        boxId={targetBoxId ?? userSettings.defaultBoxId}
+        boxName={
+          boxes.find((box) => box.id === (targetBoxId ?? userSettings.defaultBoxId))?.name || null
+        }
+        categories={categories}
+        settings={userSettings}
       />
     </div>
   );

@@ -13,6 +13,23 @@ import {
   Loader2,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import type { Category } from './CategoryManager';
+import { DEFAULT_USER_SETTINGS } from './UserSettings';
+import type { UserSettings } from './UserSettings';
+
+// Fallback hardcoded categories for users who haven't configured categories yet
+const FALLBACK_CATEGORIES = [
+  'No category',
+  'General',
+  'Electronics',
+  'Office Supplies',
+  'Furniture',
+  'Apparel',
+  'Food & Beverage',
+  'Raw Materials',
+  'Tools & Equipment',
+  'Packaging',
+];
 
 interface InventoryItem {
   id: string;
@@ -37,22 +54,11 @@ interface InventoryModalProps {
   editItem?: InventoryItem | null;
   boxId?: string | null;
   boxName?: string | null;
+  categories?: Category[];
+  settings?: UserSettings;
 }
 
 type FieldKey = 'quantity' | 'price' | 'category' | 'picture' | 'date';
-
-const CATEGORIES = [
-  'No category',
-  'General',
-  'Electronics',
-  'Office Supplies',
-  'Furniture',
-  'Apparel',
-  'Food & Beverage',
-  'Raw Materials',
-  'Tools & Equipment',
-  'Packaging',
-];
 
 export const InventoryModal: React.FC<InventoryModalProps> = ({
   isOpen,
@@ -62,12 +68,22 @@ export const InventoryModal: React.FC<InventoryModalProps> = ({
   editItem = null,
   boxId = null,
   boxName = null,
+  categories: categoriesProp = [],
+  settings = DEFAULT_USER_SETTINGS,
 }) => {
+  // Resolve the list of category names to show in the dropdown
+  const categoryNames: string[] = categoriesProp.length > 0
+    ? categoriesProp.map((c) => c.name)
+    : FALLBACK_CATEGORIES;
+
+  // The default category name (from props or first fallback)
+  const defaultCategoryName = categoriesProp.find((c) => c.is_default)?.name
+    ?? (categoryNames[0] || 'No category');
   const [name, setName] = useState('');
   const [sku, setSku] = useState('');
-  const [category, setCategory] = useState('No category');
+  const [category, setCategory] = useState(defaultCategoryName);
   const [quantity, setQuantity] = useState(0);
-  const [minStock, setMinStock] = useState(5);
+  const [minStock, setMinStock] = useState(settings.defaultMinStockLevel);
   const [price, setPrice] = useState(0);
   const [location, setLocation] = useState('');
   const [imageUrl, setImageUrl] = useState('');
@@ -94,9 +110,9 @@ export const InventoryModal: React.FC<InventoryModalProps> = ({
     if (editItem) {
       setName(editItem.name || '');
       setSku(editItem.sku || '');
-      setCategory(editItem.category || 'No category');
+      setCategory(editItem.category || defaultCategoryName);
       setQuantity(editItem.quantity || 0);
-      setMinStock(editItem.min_stock_level || 5);
+      setMinStock(editItem.min_stock_level ?? settings.defaultMinStockLevel);
       setPrice(Number(editItem.price || 0));
       setLocation(editItem.location || '');
       setImageUrl(editItem.image_url || '');
@@ -113,9 +129,9 @@ export const InventoryModal: React.FC<InventoryModalProps> = ({
     } else {
       setName('');
       setSku('');
-      setCategory('No category');
+      setCategory(defaultCategoryName);
       setQuantity(0);
-      setMinStock(5);
+      setMinStock(settings.defaultMinStockLevel);
       setPrice(0);
       setLocation('');
       setImageUrl('');
@@ -133,7 +149,7 @@ export const InventoryModal: React.FC<InventoryModalProps> = ({
 
     setError(null);
     setShowPictureMenu(false);
-  }, [editItem, isOpen]);
+  }, [editItem, isOpen, defaultCategoryName, settings.defaultMinStockLevel]);
 
   if (!isOpen) return null;
 
@@ -369,7 +385,7 @@ export const InventoryModal: React.FC<InventoryModalProps> = ({
                   onChange={(e) => setCategory(e.target.value)}
                   style={styles.inlineInput}
                 >
-                  {CATEGORIES.map((cat) => (
+                  {categoryNames.map((cat) => (
                     <option key={cat} value={cat}>
                       {cat}
                     </option>

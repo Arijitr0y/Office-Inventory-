@@ -17,9 +17,29 @@ export const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
 
   // SQL code for users to copy
   const sqlSchema = `-- Run this in your Supabase SQL Editor:
+-- 1. Create Storage Rooms Table
+create table public.rooms (
+    id uuid default gen_random_uuid() primary key,
+    user_id uuid references auth.users(id) on delete cascade not null,
+    name text not null,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 2. Create Boxes Table
+create table public.boxes (
+    id uuid default gen_random_uuid() primary key,
+    room_id uuid references public.rooms(id) on delete cascade not null,
+    user_id uuid references auth.users(id) on delete cascade not null,
+    name text not null,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 3. Create Inventory Items Table
 create table public.inventory_items (
     id uuid default gen_random_uuid() primary key,
     user_id uuid references auth.users(id) on delete cascade not null,
+    box_id uuid references public.boxes(id) on delete cascade,
     name text not null,
     sku text,
     description text,
@@ -29,10 +49,12 @@ create table public.inventory_items (
     price numeric(10, 2) default 0.00 not null check (price >= 0),
     location text,
     image_url text,
+    purchase_date date,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+-- 4. Create Stock Transactions Table
 create table public.stock_transactions (
     id uuid default gen_random_uuid() primary key,
     item_id uuid references public.inventory_items(id) on delete cascade not null,
@@ -43,18 +65,89 @@ create table public.stock_transactions (
     created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+-- 5. Create Item Movements Table
+create table public.item_movements (
+    id uuid default gen_random_uuid() primary key,
+    user_id uuid references auth.users(id) on delete cascade not null,
+    item_id uuid references public.inventory_items(id) on delete cascade not null,
+    from_box_id uuid references public.boxes(id) on delete set null,
+    to_box_id uuid references public.boxes(id) on delete cascade not null,
+    notes text,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 6. Create Box Movements Table
+create table public.box_movements (
+    id uuid default gen_random_uuid() primary key,
+    user_id uuid references auth.users(id) on delete cascade not null,
+    box_id uuid references public.boxes(id) on delete cascade not null,
+    from_room_id uuid references public.rooms(id) on delete set null,
+    to_room_id uuid references public.rooms(id) on delete cascade not null,
+    notes text,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable Row Level Security (RLS)
+alter table public.rooms enable row level security;
+alter table public.boxes enable row level security;
 alter table public.inventory_items enable row level security;
 alter table public.stock_transactions enable row level security;
+alter table public.item_movements enable row level security;
+alter table public.box_movements enable row level security;
+
+-- Set up RLS Policies
+create policy "Users can perform all operations on their own rooms"
+    on public.rooms for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy "Users can perform all operations on their own boxes"
+    on public.boxes for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 create policy "Users can perform all operations on their own items"
-    on public.inventory_items for all
-    using (auth.uid() = user_id)
-    with check (auth.uid() = user_id);
+    on public.inventory_items for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 create policy "Users can perform all operations on their own transactions"
-    on public.stock_transactions for all
-    using (auth.uid() = user_id)
-    with check (auth.uid() = user_id);`;
+    on public.stock_transactions for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy "Users can perform all operations on their own item movements"
+    on public.item_movements for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy "Users can perform all operations on their own box movements"
+    on public.box_movements for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- Trigger function for updated_at
+create or replace function public.handle_updated_at()
+returns trigger as $$
+begin
+    new.updated_at = now();
+    return new;
+end;
+$$ language plpgsql;
+
+create trigger trigger_boxes_updated_at
+    before update on public.boxes
+    for each row execute function public.handle_updated_at();
+
+create trigger trigger_inventory_items_updated_at
+    before update on public.inventory_items
+    for each row execute function public.handle_updated_at();
+
+-- 7. Provision Storage Bucket for Item Images
+insert into storage.buckets (id, name, public) 
+values ('item-images', 'item-images', true)
+on conflict (id) do nothing;
+
+-- Storage policies
+create policy "Allow authenticated uploads to item-images"
+    on storage.objects for insert to authenticated with check (bucket_id = 'item-images');
+
+create policy "Allow authenticated updates to item-images"
+    on storage.objects for update to authenticated using (bucket_id = 'item-images');
+
+create policy "Allow anyone to read item-images"
+    on storage.objects for select using (bucket_id = 'item-images');
+
+create policy "Allow authenticated deletions from item-images"
+    on storage.objects for delete to authenticated using (bucket_id = 'item-images');`;
 
   const envTemplate = `# Add this to your .env.local file:
 VITE_SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
@@ -117,7 +210,7 @@ VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY`;
             </p>
             <div style={styles.codeBlockContainer}>
               <pre style={styles.codeBlock}>{envTemplate}</pre>
-              <button 
+              <button
                 className="btn btn-secondary btn-icon btn-sm"
                 onClick={() => handleCopy(envTemplate, setCopiedEnv)}
                 style={styles.copyBtn}
@@ -134,8 +227,8 @@ VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY`;
               Go to the <strong>SQL Editor</strong> in your Supabase Dashboard, create a new query, paste the schema below, and run it to set up your tables and Row-Level Security (RLS):
             </p>
             <div style={styles.codeBlockContainer}>
-              <pre style={{...styles.codeBlock, maxHeight: '200px'}}>{sqlSchema}</pre>
-              <button 
+              <pre style={{ ...styles.codeBlock, maxHeight: '200px' }}>{sqlSchema}</pre>
+              <button
                 className="btn btn-secondary btn-icon btn-sm"
                 onClick={() => handleCopy(sqlSchema, setCopiedSql)}
                 style={styles.copyBtn}
