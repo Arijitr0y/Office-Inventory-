@@ -27,17 +27,17 @@ interface CategoryManagerProps {
   onRefresh: () => void | Promise<void>;
 }
 
-// const DEFAULT_SEED = [
-//   'General',
-//   'Electronics',
-//   'Office Supplies',
-//   'Furniture',
-//   'Apparel',
-//   'Food & Beverage',
-//   'Raw Materials',
-//   'Tools & Equipment',
-//   'Packaging',
-// ];
+const DEFAULT_SEED = [
+  'General',
+  'Electronics',
+  'Office Supplies',
+  'Furniture',
+  'Apparel',
+  'Food & Beverage',
+  'Raw Materials',
+  'Tools & Equipment',
+  'Packaging',
+];
 
 export const CategoryManager: React.FC<CategoryManagerProps> = ({
   userId,
@@ -58,41 +58,58 @@ export const CategoryManager: React.FC<CategoryManagerProps> = ({
 
     if (!trimmed) return;
 
-    if (categories.some((c) => c.name.toLowerCase() === trimmed.toLowerCase())) {
-      setError('A category with this name already exists.');
-      return;
-    }
-
     setAddingCat(true);
     setError(null);
 
     try {
-      const hasDefault = categories.some((c) => c.is_default);
+      const { data: dbCategories, error: fetchError } = await supabase
+        .from('categories')
+        .select('*')
+        .eq('user_id', userId);
 
-      const { data, error: insertError } = await supabase
+      if (fetchError) throw fetchError;
+
+      const freshCategories = ((dbCategories || []) as Category[]);
+
+      if (
+        freshCategories.some(
+          (c) => c.name.trim().toLowerCase() === trimmed.toLowerCase()
+        )
+      ) {
+        setError('A category with this name already exists.');
+        return;
+      }
+
+      // Insert as non-default first to avoid categories_user_default_idx conflict
+      const { data: insertedCategory, error: insertError } = await supabase
         .from('categories')
         .insert({
           user_id: userId,
           name: trimmed,
           is_default: false,
-          sort_order: categories.length,
+          sort_order: freshCategories.length,
         })
-        .select()
+        .select('*')
         .single();
 
       if (insertError) throw insertError;
 
-      if (!hasDefault && data?.id) {
-        const { error: defaultError } = await supabase.rpc('set_default_category', {
-          p_category_id: data.id,
-        });
+      const hasDefault = freshCategories.some((c) => c.is_default);
+
+      // Only make this default if no default exists already
+      if (!hasDefault && insertedCategory) {
+        const { error: defaultError } = await supabase
+          .from('categories')
+          .update({ is_default: true })
+          .eq('id', insertedCategory.id)
+          .eq('user_id', userId);
 
         if (defaultError) throw defaultError;
       }
 
       setNewCatName('');
       setShowAdd(false);
-      onRefresh();
+      await await onRefresh();
     } catch (err: any) {
       setError(err.message || 'Error adding category.');
     } finally {
@@ -118,7 +135,7 @@ export const CategoryManager: React.FC<CategoryManagerProps> = ({
         .eq('user_id', userId);
       if (updateError) throw updateError;
       setEditingId(null);
-      onRefresh();
+      await await onRefresh();
     } catch (err: any) {
       setError(err.message || 'Error renaming category.');
     } finally {
@@ -131,13 +148,22 @@ export const CategoryManager: React.FC<CategoryManagerProps> = ({
     setError(null);
 
     try {
-      const { error } = await supabase.rpc('set_default_category', {
-        p_category_id: categoryId,
-      });
+      const { error: clearError } = await supabase
+        .from('categories')
+        .update({ is_default: false })
+        .eq('user_id', userId);
 
-      if (error) throw error;
+      if (clearError) throw clearError;
 
-      onRefresh();
+      const { error: setDefaultError } = await supabase
+        .from('categories')
+        .update({ is_default: true })
+        .eq('id', categoryId)
+        .eq('user_id', userId);
+
+      if (setDefaultError) throw setDefaultError;
+
+      await await onRefresh();
     } catch (err: any) {
       setError(err.message || 'Error setting default category.');
     } finally {
@@ -173,14 +199,16 @@ export const CategoryManager: React.FC<CategoryManagerProps> = ({
       if (deleteError) throw deleteError;
 
       if (cat.is_default && remaining.length > 0) {
-        const { error: defaultError } = await supabase.rpc('set_default_category', {
-          p_category_id: remaining[0].id,
-        });
+        const { error: defaultError } = await supabase
+          .from('categories')
+          .update({ is_default: true })
+          .eq('id', remaining[0].id)
+          .eq('user_id', userId);
 
         if (defaultError) throw defaultError;
       }
 
-      onRefresh();
+      await onRefresh();
     } catch (err: any) {
       setError(err.message || 'Error deleting category.');
     } finally {
@@ -193,25 +221,78 @@ export const CategoryManager: React.FC<CategoryManagerProps> = ({
     setError(null);
 
     try {
-      const { error } = await supabase.rpc('seed_default_categories');
+      // Always read fresh categories from Google Sheets first
+      const { data: dbCategories, error: fetchError } = await supabase
+        .from('categories')
+        .select('*')
+        .eq('user_id', userId)
+        .order('sort_order', { ascending: true });
 
-      if (error) {
-        console.error('Seed defaults error:', error);
-        throw error;
+      if (fetchError) throw fetchError;
+
+      const freshCategories = ((dbCategories || []) as Category[]);
+
+      const existingNames = new Set(
+        freshCategories.map((c) => c.name.trim().toLowerCase())
+      );
+
+      const missingDefaults = DEFAULT_SEED.filter(
+        (name) => !existingNames.has(name.toLowerCase())
+      );
+
+      // IMPORTANT:
+      // Do not insert any seed category as default.
+      // This avoids duplicate key value violates unique constraint "categories_user_default_idx".
+      if (missingDefaults.length > 0) {
+        const { error: insertError } = await supabase
+          .from('categories')
+          .insert(
+            missingDefaults.map((name, index) => ({
+              user_id: userId,
+              name,
+              is_default: false,
+              sort_order: freshCategories.length + index,
+            }))
+          );
+
+        if (insertError) throw insertError;
       }
 
-      await onRefresh();
+      // After inserting, check if user already has a default category
+      const { data: afterInsertCategories, error: afterFetchError } = await supabase
+        .from('categories')
+        .select('*')
+        .eq('user_id', userId)
+        .order('sort_order', { ascending: true });
 
+      if (afterFetchError) throw afterFetchError;
+
+      const updatedCategories = ((afterInsertCategories || []) as Category[]);
+
+      const hasDefault = updatedCategories.some((c) => c.is_default);
+
+      // Only set default if no default exists
+      if (!hasDefault && updatedCategories.length > 0) {
+        const firstCategory = updatedCategories[0];
+
+        const { error: defaultError } = await supabase
+          .from('categories')
+          .update({ is_default: true })
+          .eq('id', firstCategory.id)
+          .eq('user_id', userId);
+
+        if (defaultError) throw defaultError;
+      }
+
+      await await onRefresh();
       alert('Default categories added successfully.');
     } catch (err: any) {
       console.error('Seed defaults failed:', err);
-      setError(err.message || 'Error seeding categories.');
-      alert(err.message || 'Error seeding categories.');
+      setError(err.message || 'Error seeding default categories.');
     } finally {
       setSeeding(false);
     }
   };
-
   const startEdit = (cat: Category) => {
     setEditingId(cat.id);
     setEditingName(cat.name);

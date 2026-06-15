@@ -193,7 +193,7 @@ export const InventoryModal: React.FC<InventoryModalProps> = ({
       setVisibleFields((prev) => ({ ...prev, picture: true }));
       setShowPictureMenu(false);
     } catch (err: any) {
-      setError(err.message || 'Image upload failed. Check Supabase Storage bucket.');
+      setError(err.message || 'Image upload failed. Check the Google Apps Script Drive upload permission.');
     } finally {
       setUploadingImage(false);
     }

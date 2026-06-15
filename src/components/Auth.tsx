@@ -6,6 +6,19 @@ interface AuthProps {
   onAuthSuccess: () => void;
 }
 
+const appsScriptTemplate = `1. Create a Google Sheet.
+2. Open Extensions > Apps Script.
+3. Paste google-apps-script/Code.gs from this project.
+4. Click Deploy > New deployment > Web app.
+5. Execute as: Me.
+6. Who has access: Anyone with the link.
+7. Copy the Web App URL and put it in .env.local.`;
+
+const envTemplate = `# Add this to your .env.local file:
+VITE_GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
+# Optional, only if API_TOKEN is set inside Code.gs
+VITE_GOOGLE_SCRIPT_TOKEN=`;
+
 export const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
@@ -13,145 +26,7 @@ export const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [copiedEnv, setCopiedEnv] = useState(false);
-  const [copiedSql, setCopiedSql] = useState(false);
-
-  // SQL code for users to copy
-  const sqlSchema = `-- Run this in your Supabase SQL Editor:
--- 1. Create Storage Rooms Table
-create table public.rooms (
-    id uuid default gen_random_uuid() primary key,
-    user_id uuid references auth.users(id) on delete cascade not null,
-    name text not null,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- 2. Create Boxes Table
-create table public.boxes (
-    id uuid default gen_random_uuid() primary key,
-    room_id uuid references public.rooms(id) on delete cascade not null,
-    user_id uuid references auth.users(id) on delete cascade not null,
-    name text not null,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- 3. Create Inventory Items Table
-create table public.inventory_items (
-    id uuid default gen_random_uuid() primary key,
-    user_id uuid references auth.users(id) on delete cascade not null,
-    box_id uuid references public.boxes(id) on delete cascade,
-    name text not null,
-    sku text,
-    description text,
-    category text default 'General' not null,
-    quantity integer default 0 not null check (quantity >= 0),
-    min_stock_level integer default 5 not null check (min_stock_level >= 0),
-    price numeric(10, 2) default 0.00 not null check (price >= 0),
-    location text,
-    image_url text,
-    purchase_date date,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- 4. Create Stock Transactions Table
-create table public.stock_transactions (
-    id uuid default gen_random_uuid() primary key,
-    item_id uuid references public.inventory_items(id) on delete cascade not null,
-    user_id uuid references auth.users(id) on delete cascade not null,
-    type text not null check (type in ('IN', 'OUT', 'ADJUSTMENT')),
-    quantity integer not null,
-    notes text,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- 5. Create Item Movements Table
-create table public.item_movements (
-    id uuid default gen_random_uuid() primary key,
-    user_id uuid references auth.users(id) on delete cascade not null,
-    item_id uuid references public.inventory_items(id) on delete cascade not null,
-    from_box_id uuid references public.boxes(id) on delete set null,
-    to_box_id uuid references public.boxes(id) on delete cascade not null,
-    notes text,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- 6. Create Box Movements Table
-create table public.box_movements (
-    id uuid default gen_random_uuid() primary key,
-    user_id uuid references auth.users(id) on delete cascade not null,
-    box_id uuid references public.boxes(id) on delete cascade not null,
-    from_room_id uuid references public.rooms(id) on delete set null,
-    to_room_id uuid references public.rooms(id) on delete cascade not null,
-    notes text,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
-
--- Enable Row Level Security (RLS)
-alter table public.rooms enable row level security;
-alter table public.boxes enable row level security;
-alter table public.inventory_items enable row level security;
-alter table public.stock_transactions enable row level security;
-alter table public.item_movements enable row level security;
-alter table public.box_movements enable row level security;
-
--- Set up RLS Policies
-create policy "Users can perform all operations on their own rooms"
-    on public.rooms for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-
-create policy "Users can perform all operations on their own boxes"
-    on public.boxes for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-
-create policy "Users can perform all operations on their own items"
-    on public.inventory_items for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-
-create policy "Users can perform all operations on their own transactions"
-    on public.stock_transactions for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-
-create policy "Users can perform all operations on their own item movements"
-    on public.item_movements for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-
-create policy "Users can perform all operations on their own box movements"
-    on public.box_movements for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-
--- Trigger function for updated_at
-create or replace function public.handle_updated_at()
-returns trigger as $$
-begin
-    new.updated_at = now();
-    return new;
-end;
-$$ language plpgsql;
-
-create trigger trigger_boxes_updated_at
-    before update on public.boxes
-    for each row execute function public.handle_updated_at();
-
-create trigger trigger_inventory_items_updated_at
-    before update on public.inventory_items
-    for each row execute function public.handle_updated_at();
-
--- 7. Provision Storage Bucket for Item Images
-insert into storage.buckets (id, name, public) 
-values ('item-images', 'item-images', true)
-on conflict (id) do nothing;
-
--- Storage policies
-create policy "Allow authenticated uploads to item-images"
-    on storage.objects for insert to authenticated with check (bucket_id = 'item-images');
-
-create policy "Allow authenticated updates to item-images"
-    on storage.objects for update to authenticated using (bucket_id = 'item-images');
-
-create policy "Allow anyone to read item-images"
-    on storage.objects for select using (bucket_id = 'item-images');
-
-create policy "Allow authenticated deletions from item-images"
-    on storage.objects for delete to authenticated using (bucket_id = 'item-images');`;
-
-  const envTemplate = `# Add this to your .env.local file:
-VITE_SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
-VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY`;
+  const [copiedGuide, setCopiedGuide] = useState(false);
 
   const handleCopy = (text: string, setCopied: (v: boolean) => void) => {
     navigator.clipboard.writeText(text);
@@ -168,18 +43,11 @@ VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY`;
 
     try {
       if (isSignUp) {
-        const { error: signUpError } = await supabase.auth.signUp({
-          email,
-          password,
-        });
+        const { error: signUpError } = await supabase.auth.signUp({ email, password });
         if (signUpError) throw signUpError;
-        alert('Registration successful! Please check your email for a confirmation link (if enabled) or proceed to login.');
-        setIsSignUp(false);
+        onAuthSuccess();
       } else {
-        const { error: signInError } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
+        const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
         if (signInError) throw signInError;
         onAuthSuccess();
       }
@@ -190,23 +58,40 @@ VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY`;
     }
   };
 
-  // If Supabase is not configured yet, show a gorgeous setup helper page
   if (!isSupabaseConfigured) {
     return (
       <div style={styles.authContainer} className="animate-fade-in">
         <div style={styles.setupCard} className="glass-panel">
           <div style={styles.header}>
             <Database size={42} style={{ color: 'var(--primary)' }} />
-            <h2 style={{ fontSize: '1.8rem', fontWeight: 700 }}>Configure Supabase Connection</h2>
+            <h2 style={{ fontSize: '1.8rem', fontWeight: 700 }}>Configure Google Sheets Connection</h2>
             <p style={{ color: 'var(--text-secondary)', textAlign: 'center', fontSize: '0.95rem' }}>
-              Your PWA inventory manager requires a Supabase database and authentication configuration.
+              Your PWA now uses a Google Sheet as the database through a Google Apps Script web app.
             </p>
           </div>
 
           <div style={styles.setupSection}>
-            <h3 style={styles.sectionTitle}>1. Set Environment Variables</h3>
+            <h3 style={styles.sectionTitle}>1. Deploy the Apps Script API</h3>
             <p style={styles.sectionDesc}>
-              Create a file named <code>.env.local</code> in the root of the project (we created a template for you) and add your Supabase Project URL and Anon API key:
+              Use the provided <code>google-apps-script/Code.gs</code> file. It creates the required tabs automatically when the web app is opened once.
+            </p>
+            <div style={styles.codeBlockContainer}>
+              <pre style={styles.codeBlock}>{appsScriptTemplate}</pre>
+              <button
+                className="btn btn-secondary btn-icon btn-sm"
+                onClick={() => handleCopy(appsScriptTemplate, setCopiedGuide)}
+                style={styles.copyBtn}
+                title="Copy setup guide"
+              >
+                {copiedGuide ? <Check size={16} style={{ color: 'var(--success)' }} /> : <Copy size={16} />}
+              </button>
+            </div>
+          </div>
+
+          <div style={styles.setupSection}>
+            <h3 style={styles.sectionTitle}>2. Set Environment Variables</h3>
+            <p style={styles.sectionDesc}>
+              Create <code>.env.local</code> in the project root and paste your Apps Script Web App URL.
             </p>
             <div style={styles.codeBlockContainer}>
               <pre style={styles.codeBlock}>{envTemplate}</pre>
@@ -214,27 +99,9 @@ VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY`;
                 className="btn btn-secondary btn-icon btn-sm"
                 onClick={() => handleCopy(envTemplate, setCopiedEnv)}
                 style={styles.copyBtn}
-                title="Copy Env Template"
+                title="Copy env template"
               >
                 {copiedEnv ? <Check size={16} style={{ color: 'var(--success)' }} /> : <Copy size={16} />}
-              </button>
-            </div>
-          </div>
-
-          <div style={styles.setupSection}>
-            <h3 style={styles.sectionTitle}>2. Create Database Schema</h3>
-            <p style={styles.sectionDesc}>
-              Go to the <strong>SQL Editor</strong> in your Supabase Dashboard, create a new query, paste the schema below, and run it to set up your tables and Row-Level Security (RLS):
-            </p>
-            <div style={styles.codeBlockContainer}>
-              <pre style={{ ...styles.codeBlock, maxHeight: '200px' }}>{sqlSchema}</pre>
-              <button
-                className="btn btn-secondary btn-icon btn-sm"
-                onClick={() => handleCopy(sqlSchema, setCopiedSql)}
-                style={styles.copyBtn}
-                title="Copy SQL Schema"
-              >
-                {copiedSql ? <Check size={16} style={{ color: 'var(--success)' }} /> : <Copy size={16} />}
               </button>
             </div>
           </div>
@@ -242,7 +109,7 @@ VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY`;
           <div style={styles.setupFooter}>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', color: 'var(--warning)', fontSize: '0.85rem' }}>
               <AlertCircle size={16} />
-              <span>Once configured, restart the npm development server to apply the environment variables.</span>
+              <span>After editing .env.local, restart the npm development server.</span>
             </div>
           </div>
         </div>
@@ -258,7 +125,7 @@ VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY`;
             <Sparkles size={24} style={{ color: '#fff' }} />
           </div>
           <h1 style={styles.title}>VeloStock</h1>
-          <p style={styles.subtitle}>PWA Inventory Intelligence</p>
+          <p style={styles.subtitle}>Google Sheets Inventory PWA</p>
         </div>
 
         <div style={styles.tabs}>
@@ -313,6 +180,7 @@ VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY`;
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
+                minLength={4}
                 style={styles.inputWithIcon}
               />
             </div>
@@ -329,7 +197,7 @@ VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY`;
             ) : isSignUp ? (
               <>
                 <UserPlus size={18} />
-                <span>Create Account</span>
+                <span>Create Sheet Account</span>
               </>
             ) : (
               <>
@@ -404,6 +272,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'hsl(190, 90%, 50%)',
     overflowX: 'auto',
     margin: 0,
+    whiteSpace: 'pre-wrap',
   },
   copyBtn: {
     position: 'absolute',
@@ -458,38 +327,22 @@ const styles: Record<string, React.CSSProperties> = {
   tab: {
     flex: 1,
     padding: '10px 0',
-    background: 'none',
     border: 'none',
-    color: 'var(--text-secondary)',
-    fontFamily: 'var(--font-sans)',
-    fontWeight: 500,
-    fontSize: '0.95rem',
-    cursor: 'pointer',
+    background: 'transparent',
+    color: 'var(--text-muted)',
+    fontWeight: 600,
     borderRadius: 'var(--radius-sm)',
-    transition: 'all var(--transition-fast)',
+    cursor: 'pointer',
   },
   activeTab: {
     background: 'var(--bg-card-solid)',
-    color: 'var(--text-primary)',
+    color: 'var(--primary)',
     boxShadow: 'var(--shadow-sm)',
   },
   form: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '4px',
-  },
-  errorBanner: {
-    display: 'flex',
-    gap: '12px',
-    alignItems: 'center',
-    padding: '12px 16px',
-    background: 'var(--danger-glow)',
-    border: '1px solid hsla(350, 80%, 55%, 0.3)',
-    borderRadius: 'var(--radius-md)',
-    color: 'var(--danger)',
-    fontSize: '0.9rem',
-    marginBottom: '16px',
-    lineHeight: '1.4',
+    gap: '18px',
   },
   inputWrapper: {
     position: 'relative',
@@ -498,30 +351,29 @@ const styles: Record<string, React.CSSProperties> = {
   },
   inputIcon: {
     position: 'absolute',
-    left: '16px',
+    left: '14px',
     color: 'var(--text-muted)',
-    pointerEvents: 'none',
   },
   inputWithIcon: {
-    paddingLeft: '46px',
+    paddingLeft: '44px',
+  },
+  errorBanner: {
+    display: 'flex',
+    gap: '10px',
+    alignItems: 'center',
+    padding: '12px',
+    borderRadius: 'var(--radius-md)',
+    background: 'hsla(0, 70%, 50%, 0.1)',
+    color: 'var(--danger)',
+    border: '1px solid hsla(0, 70%, 50%, 0.2)',
+    fontSize: '0.9rem',
   },
   spinner: {
     width: '20px',
     height: '20px',
-    border: '2px solid rgba(255, 255, 255, 0.3)',
+    border: '2px solid rgba(255,255,255,0.3)',
     borderTopColor: '#fff',
     borderRadius: '50%',
-    display: 'inline-block',
-    animation: 'spin 0.8s linear infinite',
+    animation: 'spin 1s linear infinite',
   },
 };
-
-// Insert basic animation styles to head
-const styleTag = document.createElement('style');
-styleTag.innerHTML = `
-  @keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-  }
-`;
-document.head.appendChild(styleTag);

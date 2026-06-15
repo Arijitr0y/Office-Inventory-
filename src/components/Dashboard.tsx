@@ -281,7 +281,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       } catch (err: any) {
         alert(
           err.message ||
-          'Error archiving box. Make sure you added the archived column in Supabase.'
+          'Error archiving box. Make sure the Google Sheet API is deployed and the boxes tab has the archived column.'
         );
       }
 

@@ -1,73 +1,57 @@
-# React + TypeScript + Vite
+# VeloStock Inventory PWA
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+VeloStock is a React + TypeScript + Vite inventory management PWA. This version uses **Google Sheets as the database** through a **Google Apps Script Web App** instead of Supabase.
 
-Currently, two official plugins are available:
+## Run locally
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Build
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run build
 ```
+
+## Google Sheets backend setup
+
+Read `GOOGLE_SHEETS_SETUP.md` for the full setup.
+
+Quick version:
+
+1. Create a Google Sheet.
+2. Open **Extensions > Apps Script**.
+3. Paste `google-apps-script/Code.gs`.
+4. Deploy as a **Web app**.
+5. Set **Execute as** to **Me**.
+6. Set **Who has access** to **Anyone with the link**.
+7. Copy the Web App URL into `.env.local`:
+
+```env
+VITE_GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
+VITE_GOOGLE_SCRIPT_TOKEN=
+```
+
+Restart the dev server after editing `.env.local`.
+
+## Backend tabs created automatically
+
+The Apps Script creates these Google Sheet tabs:
+
+- `users`
+- `rooms`
+- `boxes`
+- `inventory_items`
+- `stock_transactions`
+- `item_movements`
+- `box_movements`
+- `categories`
+- `user_settings`
+
+## Notes
+
+- The old Supabase-style calls are kept through a compatibility wrapper in `src/supabaseClient.ts`, but they now call Google Apps Script.
+- This is suitable for an internal lightweight inventory tool.
+- Google Sheets is not a full database replacement for high-traffic or sensitive public apps.

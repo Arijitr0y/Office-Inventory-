@@ -120,6 +120,98 @@ export const App: React.FC = () => {
     return () => subscription.unsubscribe();
   }, []);
 
+  const fetchCategories = async () => {
+    if (!session?.user) return;
+
+    try {
+      const { data: catsData, error: catsError } = await supabase
+        .from('categories')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .order('sort_order', { ascending: true });
+
+      if (catsError) throw catsError;
+
+      let resolvedCategories = ((catsData || []) as Category[]);
+
+      const { data: itemRows, error: itemRowsError } = await supabase
+        .from('inventory_items')
+        .select('id, category')
+        .eq('user_id', session.user.id);
+
+      if (itemRowsError) throw itemRowsError;
+
+      const existingNames = new Set(
+        resolvedCategories.map((cat) => cat.name.trim().toLowerCase())
+      );
+
+      const itemCategoryNames = Array.from(
+        new Set(
+          ((itemRows || []) as InventoryItem[])
+            .map((item) => (item.category || '').trim())
+            .filter((name) => name && name.toLowerCase() !== 'no category')
+        )
+      );
+
+      const missingCategoryNames = itemCategoryNames.filter(
+        (name) => !existingNames.has(name.toLowerCase())
+      );
+
+      if (missingCategoryNames.length > 0) {
+        const { data: insertedCats, error: insertCatsError } = await supabase
+          .from('categories')
+          .insert(
+            missingCategoryNames.map((name, index) => ({
+              user_id: session.user.id,
+              name,
+              is_default: resolvedCategories.length === 0 && index === 0,
+              sort_order: resolvedCategories.length + index,
+            }))
+          )
+          .select('*');
+
+        if (!insertCatsError) {
+          resolvedCategories = [
+            ...resolvedCategories,
+            ...((insertedCats || []) as Category[]),
+          ];
+        }
+      }
+
+      if (
+        resolvedCategories.length > 0 &&
+        !resolvedCategories.some((cat) => cat.is_default)
+      ) {
+        const firstCategory = [...resolvedCategories].sort(
+          (a, b) => a.sort_order - b.sort_order
+        )[0];
+
+        const { error: defaultError } = await supabase
+          .from('categories')
+          .update({ is_default: true })
+          .eq('id', firstCategory.id)
+          .eq('user_id', session.user.id);
+
+        if (!defaultError) {
+          resolvedCategories = resolvedCategories.map((cat) => ({
+            ...cat,
+            is_default: cat.id === firstCategory.id,
+          }));
+        }
+      }
+
+      setCategories(
+        resolvedCategories.sort((a, b) =>
+          a.sort_order === b.sort_order
+            ? a.name.localeCompare(b.name)
+            : a.sort_order - b.sort_order
+        )
+      );
+    } catch (err: any) {
+      console.error('Error fetching categories:', err.message);
+    }
+  };
+
   // Fetch rooms, boxes, items, transactions
   const fetchData = async () => {
     if (!session?.user) return;
@@ -149,6 +241,109 @@ export const App: React.FC = () => {
       if (itemsError) throw itemsError;
       setItems(itemsData || []);
 
+
+      const fetchCategories = async (knownItems?: InventoryItem[]) => {
+        if (!session?.user) return;
+
+        try {
+          const { data: catsData, error: catsError } = await supabase
+            .from('categories')
+            .select('*')
+            .eq('user_id', session.user.id)
+            .order('sort_order', { ascending: true });
+
+          if (catsError) throw catsError;
+
+          let resolvedCategories = ((catsData || []) as Category[]);
+
+          // Optional: import category names already used in inventory_items.category
+          let itemRows = knownItems;
+
+          if (!itemRows) {
+            const { data: itemCategoryData, error: itemCategoryError } = await supabase
+              .from('inventory_items')
+              .select('id, category')
+              .eq('user_id', session.user.id);
+
+            if (!itemCategoryError) {
+              itemRows = itemCategoryData as InventoryItem[];
+            }
+          }
+
+          const existingNames = new Set(
+            resolvedCategories.map((cat) => cat.name.trim().toLowerCase())
+          );
+
+          const itemCategoryNames = Array.from(
+            new Set(
+              ((itemRows || []) as InventoryItem[])
+                .map((item) => (item.category || '').trim())
+                .filter((name) => name && name.toLowerCase() !== 'no category')
+            )
+          );
+
+          const missingCategoryNames = itemCategoryNames.filter(
+            (name) => !existingNames.has(name.toLowerCase())
+          );
+
+          if (missingCategoryNames.length > 0) {
+            const { data: insertedCats, error: insertCatsError } = await supabase
+              .from('categories')
+              .insert(
+                missingCategoryNames.map((name, index) => ({
+                  user_id: session.user.id,
+                  name,
+                  is_default: false,
+                  sort_order: resolvedCategories.length + index,
+                }))
+              )
+              .select('*');
+
+            if (!insertCatsError) {
+              resolvedCategories = [
+                ...resolvedCategories,
+                ...((insertedCats || []) as Category[]),
+              ];
+            } else {
+              console.warn('Category auto-import skipped:', insertCatsError.message);
+            }
+          }
+
+          // If no default exists, make the first category default
+          if (
+            resolvedCategories.length > 0 &&
+            !resolvedCategories.some((cat) => cat.is_default)
+          ) {
+            const firstCategory = [...resolvedCategories].sort(
+              (a, b) => a.sort_order - b.sort_order
+            )[0];
+
+            const { error: defaultError } = await supabase
+              .from('categories')
+              .update({ is_default: true })
+              .eq('id', firstCategory.id)
+              .eq('user_id', session.user.id);
+
+            if (!defaultError) {
+              resolvedCategories = resolvedCategories.map((cat) => ({
+                ...cat,
+                is_default: cat.id === firstCategory.id,
+              }));
+            }
+          }
+
+          setCategories(
+            resolvedCategories.sort((a, b) =>
+              a.sort_order === b.sort_order
+                ? a.name.localeCompare(b.name)
+                : a.sort_order - b.sort_order
+            )
+          );
+        } catch (err: any) {
+          console.error('Error fetching categories:', err.message);
+        }
+      };
+
       // Fetch transactions
       const { data: txData, error: txError } = await supabase
         .from('stock_transactions')
@@ -172,14 +367,89 @@ export const App: React.FC = () => {
       if (txError) throw txError;
       setTransactions((txData as any) || []);
 
-      // Fetch categories
+      // Fetch categories from the real categories table.
+      // Important: inventory_items.category is only a text value.
+      // Settings reads public.categories.
       const { data: catsData, error: catsError } = await supabase
         .from('categories')
         .select('*')
         .eq('user_id', session.user.id)
         .order('sort_order', { ascending: true });
+
       if (catsError) throw catsError;
-      setCategories(catsData || []);
+
+      let resolvedCategories = ((catsData || []) as Category[]);
+
+      // Auto-import category names that already exist inside inventory_items.category.
+      // This fixes the case where items already have categories,
+      // but Settings -> Category Management is empty.
+      const existingNames = new Set(
+        resolvedCategories.map((cat) => cat.name.trim().toLowerCase())
+      );
+
+      const itemCategoryNames = Array.from(
+        new Set(
+          ((itemsData || []) as InventoryItem[])
+            .map((item) => (item.category || '').trim())
+            .filter((name) => name && name.toLowerCase() !== 'no category')
+        )
+      );
+
+      const missingCategoryNames = itemCategoryNames.filter(
+        (name) => !existingNames.has(name.toLowerCase())
+      );
+
+      if (missingCategoryNames.length > 0) {
+        const startOrder = resolvedCategories.length;
+
+        const { data: insertedCats, error: insertCatsError } = await supabase
+          .from('categories')
+          .insert(
+            missingCategoryNames.map((name, index) => ({
+              user_id: session.user.id,
+              name,
+              is_default: resolvedCategories.length === 0 && index === 0,
+              sort_order: startOrder + index,
+            }))
+          )
+          .select('*');
+
+        if (insertCatsError) {
+          console.warn(
+            'Could not import item categories into settings:',
+            insertCatsError.message
+          );
+        } else {
+          resolvedCategories = [
+            ...resolvedCategories,
+            ...((insertedCats || []) as Category[]),
+          ];
+        }
+      }
+
+      if (
+        resolvedCategories.length > 0 &&
+        !resolvedCategories.some((cat) => cat.is_default)
+      ) {
+        const firstCategory = [...resolvedCategories].sort(
+          (a, b) => a.sort_order - b.sort_order
+        )[0];
+
+        const { error: defaultCategoryError } = await supabase
+          .from('categories')
+          .update({ is_default: true })
+          .eq('id', firstCategory.id)
+          .eq('user_id', session.user.id);
+
+        if (!defaultCategoryError) {
+          resolvedCategories = resolvedCategories.map((cat) => ({
+            ...cat,
+            is_default: cat.id === firstCategory.id,
+          }));
+        }
+      }
+
+      await fetchCategories((itemsData || []) as InventoryItem[]);
     } catch (err: any) {
       console.error('Error fetching inventory storage data:', err.message);
     } finally {
@@ -257,6 +527,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (session?.user) {
       fetchData();
+      fetchCategories();
       fetchUserSettings();
     }
   }, [session]);
@@ -535,7 +806,7 @@ export const App: React.FC = () => {
               <CategoryManager
                 userId={session.user.id}
                 categories={categories}
-                onRefresh={fetchData}
+                onRefresh={fetchCategories}
               />
 
               {/* Data Operations */}
